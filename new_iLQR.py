@@ -7,7 +7,7 @@ RTT_LOW = 0.02
 SEG_DURATION = 1.0
 CHUNK_DURATION = 0.2
 CHUNK_IN_SEG = SEG_DURATION/CHUNK_DURATION
-DEF_N_STEP = 5
+DEF_N_STEP = 10
 BITRATE = [300.0, 500.0, 1000.0, 2000.0, 3000.0, 6000.0]
 SPEED = [0.9, 1.0, 1.1]
 MS_IN_S = 1000.0
@@ -19,22 +19,22 @@ class iLQR_solver(object):
     def __init__(self):
         # For new traces
         self.w1 = 1
-        self.w2 = 1
-        self.w3 = 6             # Freeze
-        self.w4 = 40            # For following 10 segments
-        self.w5 = 2             # Speed unnormal
-        self.w6 = 1             # Speed change
-        self.barrier_1 = 1
-        self.barrier_2 = 1
-        self.barrier_3 = 1
-        self.barrier_4 = 1
+        self.w2 = 2
+        self.w3 = 1             # Freeze
+        self.w4 = 8           
+        self.w5 = 20           # Speed unnormal
+        self.w6 = 20           # Speed change
+        self.barrier_1 = 0.01
+        self.barrier_2 = 0.01
+        self.barrier_3 = 0.01
+        self.barrier_4 = 0.01
 
         self.delta = 0.2  # 0.2s
         self.n_step = None
         self.predicted_bw = None
         # self.predicted_rtt = predicted_rtt
         self.predicted_rtt = None
-        self.n_iteration = 50
+        self.n_iteration = 100
         self.Bu = None
         self.b0 = None
         self.l0 = None
@@ -42,14 +42,17 @@ class iLQR_solver(object):
         self.ps0 = None
         self.med_latency = 6
 
-        self.step_size = 0.15
+        self.step_size = 0.2
+
+    def set_step(self, step=DEF_N_STEP):
+        self.n_step = step
 
     def reset(self):
         self.bw_record = [BITRATE[0]/KB_IN_MB for x in range(self.n_step)]
 
     def predict_bw(self):
-        combined_tp = self.bw_record.copy()
-        combined_tp.extend(np.zeros(self.n_step))
+        combined_tp = self.bw_record.copy().tolist()
+        combined_tp.extend([0]*self.n_step)
         for i in range(self.n_step):
             combined_tp[self.n_step + i] = self.harmonic_prediction(combined_tp[i:i+self.n_step])
         return combined_tp[-self.n_step:]
@@ -60,7 +63,6 @@ class iLQR_solver(object):
     def update_bw_record(self, new_tp):
         self.bw_record = np.roll(self.bw_record, -1, axis=0)
         self.bw_record[-1] = new_tp
-        self.bw_record.tolist()
 
     def set_x0(self, tmp_buffer, tmp_latency, tmp_pre_a_1, tmp_pre_a_2):
         self.b0 = np.round(tmp_buffer/MS_IN_S, 2)
@@ -72,37 +74,36 @@ class iLQR_solver(object):
             input()
 
     def checking(self):
-        if math.isnan(self.inputs[0]):
+        if math.isnan(self.rates[0]) or math.isnan(self.speeds[0]):
             # input() 
-            self.reset()
+            # self.reset()
             return True
 
-    def nan_index(self, p_bw):
+    def nan_index(self):
         rate_idx = 0
         for j in reversed(range(len(BITRATE))):
-            if BITRATE[j]/KB_IN_MB <= p_bw:
+            if BITRATE[j]/KB_IN_MB <= self.predicted_bw[0]:
                 rate_idx = j
                 break
         return rate_idx
 
     def set_predicted_bw_rtt(self):
+        predicted_bw = self.predict_bw()
         assert len(self.bw_record) == self.n_step
-        self.predicted_bw = [np.round(bw, 2) for bw in self.bw_record]
+        # print("predicted bw: ", predicted_bw)
+        self.predicted_bw = [np.round(bw, 2) for bw in predicted_bw]
         self.predicted_rtt = [RTT_LOW] * self.n_step
         if iLQR_SHOW:
             print("iLQR p_bw: ", self.predicted_bw)
             print("iLQR p_rtt: ", self.predicted_rtt)
 
-    def set_step(self, step=DEF_N_STEP):
-        self.n_step = step
-
     def set_bu(self, bu):
-        self.Bu = bu/MS_IN_S + SEG_DURATION
+        self.Bu = bu/MS_IN_S + CHUNK_DURATION
         if iLQR_SHOW:
             print("iLQR buffer upperbound is: ", self.Bu)
 
     def set_initial_rates(self):
-        self.rates = [self.predicted_bw[0]] * self.n_step
+        self.rates = [max(min(self.predicted_bw[0], BITRATE[-1]/KB_IN_MB), BITRATE[0]/KB_IN_MB)] * self.n_step
         self.speeds = [self.ps0] * self.n_step
         self.states = []
         self.states.append([self.b0, self.l0, self.pu0, self.ps0])
@@ -120,9 +121,9 @@ class iLQR_solver(object):
             # if r_idx < len(self.rates)-1:
             self.states.append(new_x)
         if iLQR_SHOW:
-            print("iLQR rates are: ", self.rates)
-            print("iLQR speed are: ", self.speeds)
-            print("iLQR states are: ", self.states)
+            print("initial iLQR rates are: ", self.rates)
+            print("initial iLQR speed are: ", self.speeds)
+            print("initial iLQR states are: ", self.states)
 
     def update_matrix(self, step_i):
         curr_state = self.states[step_i]
@@ -136,16 +137,16 @@ class iLQR_solver(object):
         s = self.speeds[step_i]
 
 
-        f_1 = (b-s*(u/bw+rtt) + (CHUNK_IN_SEG-1)*self.delta)        # \bar b
-        f_2 = b-s*(u/bw+rtt)+CHUNK_IN_SEG*self.delta
-        f_3 = (b-s*(u/bw+rtt) + CHUNK_IN_SEG*self.delta-self.Bu)
+        f_1 = b-s*(u/bw+rtt) + (CHUNK_IN_SEG-1)*self.delta        # \bar b
+        f_2 = b-s*(u/bw+rtt) + CHUNK_IN_SEG*self.delta
+        f_3 = b-s*(u/bw+rtt) + CHUNK_IN_SEG*self.delta-self.Bu
 
-        f_4 = (b-s*(u/bw+rtt) + (CHUNK_IN_SEG-1)*self.delta)
-        f_5 = (u-0.15)
-        f_6 = (u-6.15)
+        f_4 = b-s*(u/bw+rtt) + (CHUNK_IN_SEG-1)*self.delta
+        f_5 = u-0.15
+        f_6 = u-6.15
 
-        f_7 = (s-0.85)
-        f_8 = (s-1.15)
+        f_7 = s-0.85
+        f_8 = s-1.15
         
         if LQR_DEBUG:
             print("f1 is: ", f_1)
@@ -162,12 +163,12 @@ class iLQR_solver(object):
 
         approx_e_f1 = np.round(np.e**(min(50*f_1, 200)), 4)
         approx_e_f3 = np.round(np.e**(min(50*f_3, 200)), 4)
-        approx_e_f5 = np.round(np.e**(-50*f_5), 4)
-        approx_e_f6 = np.round(np.e**(50*f_6), 4)
-        approx_e_f7 = np.round(np.e**(-50*f_7), 4)
-        approx_e_f8 = np.round(np.e**(50*f_8), 4) 
+        approx_e_f5 = np.round(np.e**(-20*f_5), 4)
+        approx_e_f6 = np.round(np.e**(20*f_6), 4)
+        approx_e_f7 = np.round(np.e**(-20*f_7), 4)
+        approx_e_f8 = np.round(np.e**(20*f_8), 4) 
 
-
+        '''
         t_freeze = -(1/(approx_e_f1+1)*f_1/s)
         delta_tf_b = 50*approx_e_f1/(approx_e_f1+1)**2*f_1/s - 1/(s*(approx_e_f1+1))
         delta_tf_u = delta_tf_b*(-s/bw)
@@ -211,7 +212,7 @@ class iLQR_solver(object):
                             [0, 0, 0, 0, 0, 1]])
 
         delta_c_b = self.w3*delta_tf_b + self.w4*delta_l_b*approx_new_latency/(approx_new_latency+1)**2
-        delta_c_l = self.w4*(approx_new_latency/(approx_new_latency+1)**2 - approx_pre_latency/(approx_pre_latency+1)**2)
+        delta_c_l = self.w4*approx_new_latency/(approx_new_latency+1)**2
         delta_c_p_u = self.w2*2*np.log(u_p/u)/u_p
         delta_c_p_s = self.w6*2*(s_p-s)
 
@@ -269,6 +270,7 @@ class iLQR_solver(object):
                         (-s/bw)*(u/bw+rtt)*2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3 + \
                         (1/bw)*50*(-(u/bw+rtt))*approx_e_f1/(approx_e_f1+1)**2 + \
                         b/bw*2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3
+                        
         delta_td_s_s =  2500*(-(u/bw+rtt))**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) - \
                         2500*(-(u/bw+rtt))**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*b/s - \
                         (-b/s**2)*50*(-(u/bw+rtt))*approx_e_f1/(approx_e_f1+1)**2 + \
@@ -296,8 +298,7 @@ class iLQR_solver(object):
 
 
         delta_c_l_b = delta_c_b_l
-        delta_c_l_l = self.w4*(-approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3 - \
-                                -approx_pre_latency*(1-approx_pre_latency)/(approx_pre_latency+1)**3)
+        delta_c_l_l = self.w4*-approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3
         delta_c_l_pu = 0
         delta_c_l_ps = 0
         delta_c_l_u = self.w4*(-delta_l_u*approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3)
@@ -356,6 +357,236 @@ class iLQR_solver(object):
             print("CT matrix: ", self.CT)
             print("ct matrix: ", self.ct)
             print("ft matrix: ", self.ft)
+        '''
+        t_freeze = -(1/(approx_e_f1+1)*f_1/s)
+        delta_tf_b = -(-50*approx_e_f1/(approx_e_f1+1)**2*f_1/s + 1/s/(approx_e_f1+1))
+        delta_tf_u = delta_tf_b*(-s/bw)
+        delta_tf_s = -(-50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2*f_1/s + \
+                    (-(u/bw+rtt)*s-f_1)/s**2/(approx_e_f1+1))
+
+        t_display = approx_e_f1/(approx_e_f1+1)*(u/bw+rtt) + 1/(approx_e_f1+1)*b/s
+        delta_td_b = 50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+                     -50*approx_e_f1/(approx_e_f1+1)**2*b/s + \
+                     1/s/(approx_e_f1+1)
+
+        delta_td_u = (-s/bw)*50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+                     (1/bw)*approx_e_f1/(approx_e_f1+1) + \
+                     -50*(-s/bw)*approx_e_f1/(approx_e_f1+1)**2*b/s
+
+        delta_td_s = -(u/bw+rtt)*50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+                     -50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2*b/s + \
+                     -b/s**2/(approx_e_f1+1) 
+
+        delta_b_b = (50*approx_e_f1/(approx_e_f1+1)**2)*(self.Bu*approx_e_f3+f_2)/(approx_e_f3+1) + \
+                    ((50*self.Bu*approx_e_f3+approx_e_f3+1-50*approx_e_f3*f_2)/(approx_e_f3+1)**2)*approx_e_f1/(approx_e_f1+1) +\
+                    -50*self.delta*approx_e_f1/(approx_e_f1+1)**2
+        delta_b_u = delta_b_b * -s/bw
+        delta_b_s = delta_b_b * -(u/bw+rtt)
+        
+        delta_l_b = -(s-1)*delta_td_b + delta_tf_b
+
+        delta_l_u = -(s-1)*delta_td_u + delta_tf_u
+
+        delta_l_s = -(t_display + (s-1)*delta_td_s) + delta_tf_s
+
+        # new_latency = l + t_freeze
+        new_latency = l - (s-1)*t_display + t_freeze
+        new_latency_power = self.med_latency - new_latency
+        pre_latnecy_power = self.med_latency - l
+        approx_new_latency = np.round(np.e**new_latency_power, 4)
+        approx_pre_latency = np.round(np.e**pre_latnecy_power, 4)
+        # Shape 2*3
+        # (b', l', u', s') = f(b, l, p_u, p_s, u, s) So self.ft is 2*3
+        self.ft = np.array([[delta_b_b, 0, 0, 0, delta_b_u, delta_b_s],
+                            [delta_l_b, 1, 0, 0, delta_l_u, delta_l_s],
+                            [0, 0, 0, 0, 1, 0],
+                            [0, 0, 0, 0, 0, 1]])
+
+        delta_c_b = self.w3*delta_tf_b + self.w4*delta_l_b*approx_new_latency/(approx_new_latency+1)**2     # Continue here
+        delta_c_l = self.w4*approx_new_latency/(approx_new_latency+1)**2
+        delta_c_p_u = self.w2*2*np.log(u_p/u)/u_p
+        delta_c_p_s = self.w6*2*(s_p-s)
+
+        delta_c_u = -self.w1/u + self.w2*2*np.log(u/u_p)/u + \
+                    self.w3*delta_tf_u + \
+                    self.w4*delta_l_u*approx_new_latency/(approx_new_latency+1)**2 -\
+                    20*self.barrier_1*approx_e_f5 + \
+                    20*self.barrier_2*approx_e_f6
+
+        delta_c_s = self.w3*delta_tf_s + \
+                    self.w4*delta_l_s*approx_new_latency/(approx_new_latency+1)**2 + \
+                    self.w5*2*(s-1) + self.w6*2*(s-s_p) - \
+                    20*self.barrier_3*approx_e_f7 +\
+                    20*self.barrier_4*approx_e_f8
+
+        self.ct = np.array([[delta_c_b, delta_c_l, delta_c_p_u, delta_c_p_s, delta_c_u, delta_c_s]]).T
+
+        # delta_tf_b = -(-50*approx_e_f1/(approx_e_f1+1)**2*f_1/s + 1/s/(approx_e_f1+1))
+        # delta_tf_u = delta_tf_b*(-s/bw)
+        # delta_tf_s = -(-50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2*f_1/s + \
+        #             (-(u/bw+rtt)*s-f_1)/s**2/(approx_e_f1+1))
+        # Second order 
+        delta_tf_b_b = 2500*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*f_1/s + \
+                       50*approx_e_f1/s/(approx_e_f1+1)**2 + \
+                       50*approx_e_f1/s/(approx_e_f1+1)**2
+        delta_tf_b_u = delta_tf_b_b*(-s/bw)
+
+        ## Modified
+        delta_tf_b_s = 2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*f_1/s + \
+                        (-(u/bw+rtt)*s-f_1)/s**2*50*approx_e_f1/(approx_e_f1+1)**2 + \
+                        1/s**2/(approx_e_f1+1) + \
+                        50*(-(u/bw+rtt))*approx_e_f1/s/(approx_e_f1+1)**2
+        delta_tf_u_u = delta_tf_b_b * (-s/bw)**2
+
+        delta_tf_u_s = delta_tf_b_s*(-s/bw) - 1/bw*delta_tf_b
+
+        # delta_tf_u_s = -1/bw*(50*approx_e_f1/(approx_e_f1+1)**2*f_1/s - 1/s/(approx_e_f1+1)) + \
+        #               (-s/bw)*(2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*f_1/s + \
+        #               50*approx_e_f1/(approx_e_f1+1)**2*(-(u/bw+rtt)*s-f_1)/s**2 + \
+        #               (1+approx_e_f1+s*50*-(u/bw+rtt)*approx_e_f1)/(s*(approx_e_f1+1))**2)
+        delta_tf_s_s = 2500*(-(u/bw+rtt))**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*f_1/s + \
+                        (-(u/bw+rtt)*s-f_1)/s**2*50*(-(u/bw+rtt))*approx_e_f1/(approx_e_f1+1)**2 + \
+                        (-(u/bw+rtt)*s-f_1)/s**2*50*(-(u/bw+rtt))*approx_e_f1/(approx_e_f1+1)**2 + \
+                        2*(-(u/bw+rtt)*s-f_1)/s**3/(approx_e_f1+1)
+        # delta_tf_s = 50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2*f_1/s - \
+                    # 1/(approx_e_f1+1)*(-(u/bw+rtt)*s-f_1)/s**2
+
+
+        # t_display = approx_e_f1/(approx_e_f1+1)*(u/bw+rtt) + 1/(approx_e_f1+1)*b/s
+        # delta_td_b = 50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+        #              -50*approx_e_f1/(approx_e_f1+1)**2*b/s + \
+        #              1/s/(approx_e_f1+1)
+
+        delta_td_b_b = 2500*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) - \
+                       2500*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*b/s - \
+                       50*approx_e_f1/s/(approx_e_f1+1)**2 - \
+                       50*approx_e_f1/s/(approx_e_f1+1)**2
+        delta_td_b_u = 2500*(-s/bw)*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) + \
+                        1/bw*50*approx_e_f1/(approx_e_f1+1)**2 - \
+                        2500*(-s/bw)*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*b/s - \
+                        50*(-s/bw)*approx_e_f1/(approx_e_f1+1)**2/s
+
+        delta_td_b_s = 2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) - \
+                       (2500*(-(u/bw+rtt))*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt)*b/s - \
+                       b/s**2*50*approx_e_f1/(approx_e_f1+1)**2) + \
+                       (-1/s**2/(1+approx_e_f1)-50*(-(u/bw+rtt))*approx_e_f1/(1+approx_e_f1)**2/s)
+
+        # delta_td_u = (-s/bw)*50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+        #              (1/bw)*approx_e_f1/(approx_e_f1+1) + \
+        #              -50*(-s/bw)*approx_e_f1/(approx_e_f1+1)**2*b/s
+
+        delta_td_u_u = 2500*(-s/bw)**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) + \
+                        1/bw*50*(-s/bw)*approx_e_f1/(approx_e_f1+1)**2 + \
+                        1/bw*50*(-s/bw)*approx_e_f1/(approx_e_f1+1)**2 - \
+                        2500*(-s/bw)**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt)*b/s
+
+        delta_td_u_s = (-1/bw)*(50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt)) + \
+                        (-s/bw)*(u/bw+rtt)*2500*-(u/bw+rtt)*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3 + \
+                        (1/bw)*50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2 + \
+                        b/bw*2500*-(u/bw+rtt)*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3
+
+        # delta_td_s = -(u/bw+rtt)*50*approx_e_f1/(approx_e_f1+1)**2*(u/bw+rtt) + \
+        #              -50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2*b/s + \
+        #              -b/s**2/(approx_e_f1+1) 
+
+        delta_td_s_s =  2500*(-(u/bw+rtt))**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*(u/bw+rtt) - \
+                        2500*(-(u/bw+rtt))**2*approx_e_f1*(1-approx_e_f1)/(approx_e_f1+1)**3*b/s + \
+                        b/s**2*50*(-(u/bw+rtt))*approx_e_f1/(approx_e_f1+1)**2 + \
+                        2*b/s**3/(approx_e_f1+1) + \
+                        b/s**2*50*-(u/bw+rtt)*approx_e_f1/(approx_e_f1+1)**2
+
+        delta_l_b_b = -(s-1)*delta_td_b_b + delta_tf_b_b
+
+        delta_l_b_u = -(s-1)*delta_td_b_u + delta_tf_b_u
+
+        delta_l_b_s = -(delta_td_b + (s-1)*delta_td_b_s) + delta_tf_b_s
+        delta_l_u_u = -(s-1)*delta_td_u_u + delta_tf_u_u
+        delta_l_u_s = -(delta_td_u + (s-1)*delta_td_u_s) + delta_tf_u_s
+        delta_l_s_s = -(delta_td_s + delta_td_s + (s-1)*delta_td_s_s) + delta_tf_s_s
+
+
+        # c = ... + self.w4*/(1+approx_new_latency)
+        # delta_c_b = self.w3*delta_tf_b + self.w4*delta_l_b*approx_new_latency/(approx_new_latency+1)**2
+        delta_c_b_b = self.w3*delta_tf_b_b + \
+                      self.w4*((delta_l_b_b*approx_new_latency - delta_l_b*delta_l_b*approx_new_latency)*(1+approx_new_latency) +\
+                       2*delta_l_b*delta_l_b*approx_new_latency**2)/(approx_new_latency+1)**3
+        delta_c_b_l = self.w4*-delta_l_b*approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3
+        delta_c_b_pu = 0
+        delta_c_b_ps = 0    
+        delta_c_b_u = self.w3*delta_tf_b_u + \
+                      self.w4*((delta_l_b_u*approx_new_latency - delta_l_b*delta_l_u*approx_new_latency)*(1+approx_new_latency) +\
+                       2*delta_l_b*delta_l_u*approx_new_latency**2)/(approx_new_latency+1)**3
+        delta_c_b_s = self.w3*delta_tf_b_s + \
+                      self.w4*((delta_l_b_s*approx_new_latency - delta_l_b*delta_l_s*approx_new_latency)*(1+approx_new_latency) +\
+                       2*delta_l_b*delta_l_s*approx_new_latency**2)/(approx_new_latency+1)**3
+
+
+        # delta_c_l = self.w4*approx_new_latency/(approx_new_latency+1)**2
+        delta_c_l_b = delta_c_b_l
+        delta_c_l_l = -self.w4*approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3
+        delta_c_l_pu = 0
+        delta_c_l_ps = 0
+        delta_c_l_u = -self.w4*delta_l_u*approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3
+        delta_c_l_s = -self.w4*delta_l_s*approx_new_latency*(1-approx_new_latency)/(approx_new_latency+1)**3
+
+        # delta_c_p_u = self.w2*2*np.log(u_p/u)/u_p
+        delta_c_pu_b = 0
+        delta_c_pu_l = 0
+        delta_c_pu_pu = self.w2*2*(1-np.log(u_p/u))/u_p**2
+        delta_c_pu_ps = 0
+        delta_c_pu_u = self.w2*-2/u_p/u
+        delta_c_pu_s = 0
+
+        # delta_c_p_s = self.w6*2*(s_p-s)
+        delta_c_ps_b = 0
+        delta_c_ps_l = 0
+        delta_c_ps_pu = 0
+        delta_c_ps_ps = self.w6*2
+        delta_c_ps_u = 0
+        delta_c_ps_s = self.w6*-2
+
+        # delta_c_u = -self.w1/u + self.w2*2*np.log(u/u_p)/u + \
+        #             self.w3*delta_tf_u + \
+        #             self.w4*delta_l_u*approx_new_latency/(approx_new_latency+1)**2 -\
+        #             50*self.barrier_1*approx_e_f5 + \
+        #             50*self.barrier_2*approx_e_f6
+        delta_c_u_b = delta_c_b_u
+        delta_c_u_l = delta_c_l_u
+        delta_c_u_pu = delta_c_pu_u
+        delta_c_u_ps = 0
+        delta_c_u_u = self.w1/u**2 + self.w2*2*(1-np.log(u/u_p))/u**2 + \
+                      self.w3* delta_tf_u_u + \
+                      self.w4*((delta_l_u_u*approx_new_latency - delta_l_u*delta_l_u*approx_new_latency)*(1+approx_new_latency) +\
+                       2*delta_l_u*delta_l_u*approx_new_latency**2)/(approx_new_latency+1)**3 +\
+                      400.0*self.barrier_1*approx_e_f5 + \
+                      400.0*self.barrier_2*approx_e_f6 
+        delta_c_u_s = self.w3*delta_tf_u_s + \
+                      self.w4*((delta_l_u_s*approx_new_latency - delta_l_u*delta_l_s*approx_new_latency)*(1+approx_new_latency) +\
+                      2*delta_l_u*delta_l_s*approx_new_latency**2)/(approx_new_latency+1)**3
+
+        # delta_c_s = self.w3*delta_tf_s + \
+        #             self.w4*delta_l_s*approx_new_latency/(approx_new_latency+1)**2 + \
+        #             self.w5*2*(s-1) + self.w6*2*(s-s_p) - \
+        #             50*self.barrier_3*approx_e_f7 +\
+        #             50*self.barrier_4*approx_e_f8
+        delta_c_s_b = delta_c_b_s
+        delta_c_s_l = delta_c_l_s
+        delta_c_s_pu = 0
+        delta_c_s_ps = delta_c_ps_s
+        delta_c_s_u = delta_c_u_s
+        delta_c_s_s = self.w3*delta_tf_s_s + \
+                      self.w4*((delta_l_s_s*approx_new_latency - delta_l_s*delta_l_s*approx_new_latency)*(1+approx_new_latency) +\
+                      2*delta_l_s*delta_l_s*approx_new_latency**2)/(approx_new_latency+1)**3 + \
+                      self.w5*2 + self.w6*2 + \
+                      400.0*self.barrier_3*approx_e_f7 + \
+                      400.0*self.barrier_4*approx_e_f8 
+
+        self.CT = np.array([[delta_c_b_b, delta_c_b_l, delta_c_b_pu, delta_c_b_ps, delta_c_b_u, delta_c_b_s],
+                            [delta_c_l_b, delta_c_l_l, delta_c_l_pu, delta_c_l_ps, delta_c_l_u, delta_c_l_s],
+                            [delta_c_pu_b, delta_c_pu_l, delta_c_pu_pu, delta_c_pu_ps, delta_c_pu_u, delta_c_pu_s],
+                            [delta_c_ps_b, delta_c_ps_l, delta_c_ps_pu, delta_c_ps_ps, delta_c_ps_u, delta_c_ps_s],
+                            [delta_c_u_b, delta_c_u_l, delta_c_u_pu, delta_c_u_ps, delta_c_u_u, delta_c_u_s],
+                            [delta_c_s_b, delta_c_s_l, delta_c_s_pu, delta_c_s_ps, delta_c_s_u, delta_c_s_s]]).T
 
     def iterate_LQR(self):
         # Get first loop of state using initial_u
@@ -388,12 +619,24 @@ class iLQR_solver(object):
                     if LQR_DEBUG:
                         print("vt: ", vt)
                         print("qt: ", qt)
+
+                # Origin
                 Q_xx = Qt[:4,:4]         #4*4
                 Q_xu = Qt[:4,5:]         #4*2
                 Q_ux = Qt[5:,:4]         #2*4
                 Q_uu = Qt[5:,5:]         #2*2
                 q_x = qt[:4]             #4*1
                 q_u = qt[5:]             #2*1
+                # print(q_x)
+                # print(q_u)
+
+                # print(Qt)
+                # Q_xx = Qt[:4,:4]         #4*4
+                # Q_xu = Qt[:4,4:]         #4*2
+                # Q_ux = Qt[4:,:4]         #2*4
+                # Q_uu = Qt[4:,4:]         #2*2
+                # q_x = qt[:4]             #4*1
+                # q_u = qt[4:]             #2*1
 
                 KT = np.dot(-1, np.dot(np.linalg.inv(Q_uu), Q_ux))          
                 kt = np.dot(-1, np.dot(np.linalg.inv(Q_uu), q_u))                           
@@ -428,7 +671,7 @@ class iLQR_solver(object):
                     input() 
 
                 # Check converge
-                if converge and (np.round(new_u[0][0], 1) != np.round(self.rates[step_i],1) or np.round(new_u[1][0], 1) != np.round(self.speeds[step_i],1)  ):
+                if converge and (np.round(new_u[0][0], 2) != np.round(self.rates[step_i],2) or np.round(new_u[1][0], 2) != np.round(self.speeds[step_i],2)  ):
                     converge = False
                 self.rates[step_i] = np.round(new_u[0][0], 2)
                 self.speeds[step_i] = np.round(new_u[1][0], 2)
@@ -458,13 +701,17 @@ class iLQR_solver(object):
             # Check convergence
             if iLQR_SHOW:
                 print("Iteration ", ite_i, ", previous rate: ", self.states[0][1])
-                print("Iteration ", ite_i, ", state is: ", [x[0] for x in self.states])
+                print("Iteration ", ite_i, ", buffer is: ", [x[0] for x in self.states])
+                print("Iteration ", ite_i, ", latency is: ", [x[1] for x in self.states])
                 print("Iteration ", ite_i, ", pre bw is: ", self.predicted_bw)
                 print("Iteration ", ite_i, ", action is: ", self.rates)
+                print("Iteration ", ite_i, ", action is: ", self.speeds)
+
                 print("<===============================================>")
 
         r_idx = self.translate_to_rate_idx()
-        s_idx = self.translate_to_speed_idx()
+        # s_idx = self.translate_to_speed_idx()
+        s_idx = self.translate_to_speed_idx_accu()
         return r_idx, s_idx
 
     def get_rates(self):
@@ -472,9 +719,28 @@ class iLQR_solver(object):
 
     def translate_to_speed_idx(self):
         first_speed = self.speeds[0]
-        print("speeds: ", self.speeds)
+        # first_speed = np.mean(self.speeds)
+        if iLQR_SHOW:
+            print("speeds: ", self.speeds)
+            print("<-------------END------------>")
         distance = [np.abs(first_speed-s) for s in SPEED]
         speed_idx = distance.index(min(distance))
+        return speed_idx
+
+    def translate_to_speed_idx_accu(self):
+        # first_speed = self.speeds[0]
+        first_speed = np.mean(self.speeds[:3])
+        if iLQR_SHOW:
+            print("speeds: ", self.speeds)
+            print("<-------------END------------>")
+        distance = [np.abs(first_speed-s) for s in SPEED]
+        speed_idx = distance.index(min(distance))
+        # if first_speed <= 0.9:
+        #     return 0
+        # elif first_speed >= 1.1:
+        #     return 2
+        # else:
+        #     return 1
         return speed_idx
 
     def translate_to_rate_idx(self):
@@ -489,6 +755,7 @@ class iLQR_solver(object):
         if iLQR_SHOW:
             print("Rate is: ", first_action)
             print("Rate index: ", rate_idx)
+
             # input()
         return rate_idx
 
@@ -510,7 +777,10 @@ class iLQR_solver(object):
         buffer_len = max(buffer_len + (CHUNK_IN_SEG-1)*self.delta - speed*download_time, 0.0)
         buffer_len += self.delta
         if freezing > 0.0:
-            assert buffer_len == self.delta
+            print
+            if  buffer_len != self.delta:
+                print("speed should be invalid: ", speed)
+                print("freezing is: ", freezing)
         buffer_len = min(self.Bu, buffer_len)
         return buffer_len, latency
 

@@ -9,10 +9,10 @@ from server import *
 from utils import load_bandwidth, load_single_trace
 
 class Live_Streaming(object):
-    def __init__(self, initial_latency, testing=False, massive=False, random_seed=Config.random_seed):
+    def __init__(self, initial_latency, testing=False, massive=False, random_latency=False, random_seed=Config.random_seed):
         np.random.seed(random_seed)
         if testing:
-            self.time_traces, self.throughput_traces, self.name_traces = load_bandwidth()
+            self.time_traces, self.throughput_traces, self.name_traces = load_bandwidth(testing=True)
             if massive: 
                 self.trace_idx = -1     # After first reset, it is 0
                 self.a1_batch = []
@@ -42,6 +42,7 @@ class Live_Streaming(object):
         self.state = np.zeros((Env_Config.s_info, Env_Config.s_len))
         self.video_length = 0
         self.ending_flag = 0
+        self.random_latency = random_latency
 
     def act(self, action_1, action_2, log_file=None, massive=False):
         # Initial iteration variables
@@ -173,8 +174,9 @@ class Live_Streaming(object):
             delay_p = self.get_latency_penalty(latency/Env_Config.ms_in_s, chunk_number)
 
             # 5th reward, display speed
-            unnormal_speed_p = self.get_unnormal_speed_penalty(transformed_action_2, display_duration/Env_Config.ms_in_s)
-            
+            # unnormal_speed_p = self.get_unnormal_speed_penalty(transformed_action_2, display_duration/Env_Config.ms_in_s)
+            unnormal_speed_p = self.get_unnormal_speed_penalty(transformed_action_2, 0.2)
+
             # Sum of all metrics
             action_reward += quality_r - rebuff_p - smooth_p - delay_p - speed_smooth_p  - unnormal_speed_p # - missing_p - repeat_p
             # print(latency)
@@ -232,13 +234,15 @@ class Live_Streaming(object):
     def streaming_finish(self):
         return self.ending_flag
 
-    def reset(self, testing=False):
+    def reset(self, testing=False, bw_amplify=False):
         if testing:
             self.trace_idx += 1
             if self.trace_idx == len(self.throughput_traces):
                 return 1
-            self.player.reset(self.throughput_traces[self.trace_idx], self.time_traces[self.trace_idx], self.name_traces[self.trace_idx], testing=True)
-            self.server.reset(testing=testing)
+            self.player.reset(self.throughput_traces[self.trace_idx], \
+                            self.time_traces[self.trace_idx], self.name_traces[self.trace_idx], \
+                            testing=True, bw_amplify=bw_amplify)
+            self.server.reset(testing=testing, random_latency=self.random_latency)
             self.ending_flag = 0
             self.video_length = 0
             self.a1_batch = []
@@ -251,7 +255,9 @@ class Live_Streaming(object):
             return 0
         else:
             self.trace_idx = np.random.randint(len(self.throughput_traces))
-            self.player.reset(self.throughput_traces[self.trace_idx], self.time_traces[self.trace_idx], self.name_traces[self.trace_idx], testing=False)
+            self.player.reset(self.throughput_traces[self.trace_idx], \
+                            self.time_traces[self.trace_idx], self.name_traces[self.trace_idx], \
+                            testing=False, bw_amplify=bw_amplify)
             self.server.reset()
             self.ending_flag = 0
             self.video_length = 0
@@ -266,6 +272,10 @@ class Live_Streaming(object):
         cdf_path.write(str(np.mean(self.c_batch)) + '\t')
         cdf_path.write(str(np.mean(self.l_batch)) + '\t')
         cdf_path.write(str(np.mean(self.sc_batch)) + '\t')
+
+        cdf_path.write(str(np.var(self.a2_batch)) + '\t')
+        cdf_path.write(str(0) + '\t')
+        cdf_path.write(str(0) + '\t')
         cdf_path.write('\n')
 
     def translate_to_speed(self, action_2_index):

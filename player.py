@@ -5,6 +5,7 @@ from random import Random
 class Live_Player(object):
     def __init__(self, throughput_trace, time_trace, trace_name, random_seed=Config.random_seed):
         self.myRandom = Random(random_seed)
+        self.ampRandom = Random(random_seed+1)
         self.throughput_trace = throughput_trace
         self.time_trace = time_trace
         self.trace_name = trace_name
@@ -270,9 +271,34 @@ class Live_Player(object):
         # return sync
         pass
 
-    def reset(self, throughput_trace, time_trace, trace_name, testing=False):
+    def throughput_trace_amplifyer_mean(self, trace):
+        s = self.ampRandom.randint(0,2)
+        c_id = self.ampRandom.randint(Env_Config.range_low, Env_Config.range_high)
+        # print(s, c_id)
+        curr_mean = np.mean(trace[:c_id])
+        new_trace = []
+        for i in range(len(trace)):
+            if i == c_id:
+                s = self.ampRandom.randint(0, 2)
+                p_id = c_id
+                c_id += self.ampRandom.randint(Env_Config.range_low, Env_Config.range_high)
+                curr_mean = np.mean(trace[p_id:c_id])
+            if s == 0:
+                r = 1
+            elif s == 1:
+                r = 0.2
+            elif s == 2:
+                r = 1.2
+            new_trace.append((trace[i]-curr_mean)*r + curr_mean)
+        # print(new_trace)
+        return new_trace
+
+    def reset(self, throughput_trace, time_trace, trace_name, testing=False, bw_amplify=False):
         self.playing_time = 0.0
-        self.throughput_trace = throughput_trace
+        if bw_amplify:
+            self.throughput_trace = self.throughput_trace_amplifyer_mean(throughput_trace)
+        else:
+            self.throughput_trace = throughput_trace
         self.time_trace = time_trace
         self.trace_name = trace_name
         if testing:

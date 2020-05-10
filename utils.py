@@ -4,8 +4,10 @@ from config import Env_Config
 
 def load_bandwidth(testing=False):
     if testing:
+        data_dir = Env_Config.test_data_dir
         datas = os.listdir(Env_Config.test_data_dir)
     else:
+        data_dir = Env_Config.data_dir
         datas = os.listdir(Env_Config.data_dir)
     time_traces = []
     throughput_traces = []
@@ -13,7 +15,7 @@ def load_bandwidth(testing=False):
     if Env_Config.bw_env_version == 0:
         for data in datas:
             if  '.DS' in data: continue
-            file_path = Env_Config.data_dir + data
+            file_path = data_dir + data
             time_trace = []
             throughput_trace = []
             time = 0.0

@@ -39,9 +39,12 @@ class Config(object):
     maximum_model = 5
     random_seed = 11
     massive_result_files = './all_results/'
+    a_massive_result_files = './amplified_all_results/'
     regular_test_files = './debug/'
+    a_regular_test_files = './amplified_debug/'
     cdf_dir = '../compare/compare_results/'
-    trace_idx = 10
+    a_cdf_dir = '../compare/amplified_compare_results/'
+    trace_idx = 20
 
 class Env_Config(object):
     # For environment, ms
@@ -61,27 +64,30 @@ class Env_Config(object):
     packet_payload_portion = 0.973
     rtt_low = 30.0
     rtt_high = 40.0 
+    range_low = 40
+    range_high = 50
     chunk_random_ratio_low = 0.95
     chunk_random_ratio_high = 1.05
 
     bitrate = [300.0, 500.0, 1000.0, 2000.0, 3000.0, 6000.0]
     speeds = [0.90, 1.0, 1.10]
+    # speeds = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2 ,1.3]
     ms_in_s = 1000.0
     kb_in_mb = 1000.0   # in ms
     seg_duration = 1000.0
     chunk_duration = 200.0
     chunk_in_seg = seg_duration/chunk_duration
     chunk_seg_ratio = chunk_duration/seg_duration
-    server_init_lat_low = 1
-    server_init_lat_high = 20
+    server_init_lat_low = 2
+    server_init_lat_high = 5
     start_up_ssh = 2000.0
     freezing_tol = 3000.0 
     buffer_ub = server_init_lat_high*seg_duration
     
     default_action_1 = 0
     default_action_2 = 1
-    skip_segs = 3.0
-    repeat_segs = 3.0
+    skip_segs = 2.0
+    repeat_segs = 2.0
 
     # Server info
     bitrate_low_noise = 0.7
@@ -101,13 +107,13 @@ class Env_Config(object):
     const = 6.0
     x_ratio = 1.0 
     speed_smooth_penalty = 2.0
-    unnormal_playing_penalty = 1.0              
-    skip_seg_penalty = 3.0              
-    repeat_seg_penalty = 3.0      
+    unnormal_playing_penalty = 2.0              
+    skip_seg_penalty = 2.0              
+    repeat_seg_penalty = 2.0      
     skip_latency = skip_segs * seg_duration + chunk_duration 
 
 class Plot_Config(object):
-    result_dir = './debug/model_0/'
-    figures_dir = './test_figures/model_0/'
-    result_file = './test_figures/model_0/'
+    result_dir = './debug/'
+    figures_dir = './test_figures/'
+    result_file = './test_figures/'
     plt_buffer_a = 1e-5
