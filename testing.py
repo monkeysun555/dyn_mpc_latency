@@ -46,7 +46,7 @@ def main():
         if not os.path.exists(result_path):
              os.makedirs(result_path) 
         if random_latency:
-            compare_file = open(compare_path + 'dyn_mpc_normal_new.txt' , 'w')
+            compare_file = open(compare_path + 'dyn_mpc_normal_new_test.txt' , 'w')
         else:
             compare_file = open(compare_path + 'dyn_mpc' + str(int(init_latency)) +'s.txt' , 'w')
  

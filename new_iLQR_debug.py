@@ -21,7 +21,7 @@ class iLQR_solver(object):
         self.w1 = 1
         self.w2 = 1
         self.w3 = 1             # Freeze
-        self.w4 = 6          
+        self.w4 = 8          
         self.w5 = 15           # Speed unnormal
         self.w6 = 15           # Speed change
         self.barrier_1 = 1
